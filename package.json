@@ -1,0 +1,46 @@
+{
+    "name": "opnet-wallet-tracker",
+    "version": "1.0.0",
+    "description": "OPNet wallet tracker Telegram bot — like EtherDrops for Bitcoin L1",
+    "type": "module",
+    "main": "dist/index.js",
+    "scripts": {
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "dev": "tsx watch src/index.ts",
+        "lint": "eslint src --ext .ts",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@btc-vision/bitcoin": "rc",
+        "@btc-vision/transaction": "rc",
+        "dotenv": "^16.4.7",
+        "grammy": "^1.35.0",
+        "opnet": "rc"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.39.2",
+        "@types/node": "latest",
+        "eslint": "^10.0.1",
+        "tsx": "latest",
+        "typescript": "latest",
+        "typescript-eslint": "^8.36.0"
+    },
+    "overrides": {
+        "@typescript-eslint/typescript-estree": {
+            "minimatch": "^10.2.1"
+        },
+        "@typescript-eslint/utils": {
+            "minimatch": "^10.2.1"
+        },
+        "@typescript-eslint/type-utils": {
+            "minimatch": "^10.2.1"
+        },
+        "@eslint/config-array": {
+            "minimatch": "^10.2.1"
+        },
+        "eslint": {
+            "minimatch": "^10.2.1"
+        }
+    }
+}
