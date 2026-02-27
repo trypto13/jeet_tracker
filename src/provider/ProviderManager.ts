@@ -1,6 +1,5 @@
 import { JSONRpcProvider } from 'opnet';
-import { networks } from '@btc-vision/bitcoin';
-import { config } from '../config.js';
+import { config, bitcoinNetwork } from '../config.js';
 
 /**
  * Singleton OPNet JSON-RPC provider.
@@ -10,12 +9,9 @@ class ProviderManager {
     private readonly provider: JSONRpcProvider;
 
     private constructor() {
-        const network =
-            config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
-
         this.provider = new JSONRpcProvider({
             url: config.rpcUrl,
-            network,
+            network: bitcoinNetwork,
         });
     }
 

@@ -1,10 +1,9 @@
 import type { CommandContext, Context } from 'grammy';
 import { AddressVerificator } from '@btc-vision/transaction';
-import { networks } from '@btc-vision/bitcoin';
 import { walletRepo } from '../../db/WalletRepository.js';
 import type { LinkedAddresses } from '../../db/WalletRepository.js';
 import { providerManager } from '../../provider/ProviderManager.js';
-import { config } from '../../config.js';
+import { config, bitcoinNetwork } from '../../config.js';
 import { scanHistory } from '../../tracker/HistoricalScanner.js';
 
 function escapeMarkdown(text: string): string {
@@ -16,12 +15,12 @@ function escapeMarkdown(text: string): string {
  * P2OP addresses (op1/opr1) are intentionally excluded.
  */
 function isValidBitcoinAddress(address: string): boolean {
-    const net = config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
+    const net = bitcoinNetwork;
     return AddressVerificator.detectAddressType(address, net) !== null;
 }
 
 function isP2OPAddress(address: string): boolean {
-    const net = config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
+    const net = bitcoinNetwork;
     return AddressVerificator.isValidP2OPAddress(address, net);
 }
 
@@ -55,7 +54,7 @@ export async function trackCommand(ctx: CommandContext<Context>): Promise<void> 
     if (!isValidBitcoinAddress(address) && !isValidMldsaHex(address)) {
         await ctx.reply(
             `❌ Invalid address: \`${escapeMarkdown(address)}\`\n\n` +
-            `Supported formats:\n• Bitcoin: \`bc1p\`, \`bc1q\`, \`bcrt1p\`, \`bcrt1q\`\n• MLDSA key: \`0x…\` \\(64 hex chars\\)`,
+            `Supported formats:\n• Bitcoin: \`bc1p\`, \`bc1q\`, \`opt1p\`, \`opt1q\`, \`bcrt1p\`, \`bcrt1q\`\n• MLDSA key: \`0x…\` \\(64 hex chars\\)`,
             { parse_mode: 'MarkdownV2' },
         );
         return;
@@ -73,7 +72,7 @@ export async function trackCommand(ctx: CommandContext<Context>): Promise<void> 
         const provider = providerManager.getProvider();
         const owner = await provider.getPublicKeyInfo(address, false);
         if (owner) {
-            const net = config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
+            const net = bitcoinNetwork;
             mldsaHash = Buffer.from(owner).toString('hex').toLowerCase();
 
             let p2tr: string | undefined;

@@ -1,114 +1,11 @@
 import type { CommandContext, Context } from 'grammy';
 import { AddressVerificator } from '@btc-vision/transaction';
-import { networks, type Network } from '@btc-vision/bitcoin';
-import { getContract, OP_20_ABI, type IOP20Contract } from 'opnet';
+import { type Network } from '@btc-vision/bitcoin';
+import { getContract, OP_721_ABI, type IOP721Contract } from 'opnet';
 import { providerManager } from '../../provider/ProviderManager.js';
 import { walletRepo } from '../../db/WalletRepository.js';
-import { config } from '../../config.js';
-
-// Known OP-20 contracts to always check per network.
-const ALWAYS_CHECK: Record<'mainnet' | 'regtest', string[]> = {
-    mainnet: [
-        '0x75bd98b086b71010448ec5722b6020ce1e0f2c09f5d680c84059db1295948cf8', // MOTO
-    ],
-    regtest: [
-        '0x0a6732489a31e6de07917a28ff7df311fc5f98f6e1664943ac1c3fe7893bdab5', // MOTO
-        '0xfb7df2f08d8042d4df0506c0d4cee3cfa5f2d7b02ef01ec76dd699551393a438', // PILL
-        '0xc573930e4c67f47246589ce6fa2dbd1b91b58c8fdd7ace336ce79e65120f79eb', // ODYS
-    ],
-};
-
-// OP20_DEPLOYER factory — enumerates ALL tokens deployed via the factory.
-const OP20_DEPLOYER_ADDRESS: Record<'mainnet' | 'regtest', string | null> = {
-    mainnet: null,
-    regtest: '0x1d2d60f610018e30c043f5a2af2ce57931759358f83ed144cb32717a9ad22345',
-};
-
-// Minimal inline ABI for the two factory read methods we need.
-const FACTORY_ABI = [
-    {
-        name: 'getDeploymentsCount',
-        type: 'function' as const,
-        constant: true,
-        inputs: [],
-        outputs: [{ name: 'count', type: 'UINT32' as const }],
-    },
-    {
-        name: 'getDeploymentByIndex',
-        type: 'function' as const,
-        constant: true,
-        inputs: [{ name: 'index', type: 'UINT32' as const }],
-        outputs: [
-            { name: 'deployer', type: 'ADDRESS' as const },
-            { name: 'token', type: 'ADDRESS' as const },
-            { name: 'block', type: 'UINT64' as const },
-        ],
-    },
-];
-
-// Cache factory token addresses for 5 minutes.
-const FACTORY_CACHE_TTL_MS = 5 * 60 * 1000;
-let factoryCacheTs = 0;
-let factoryCacheList: string[] = [];
-
-async function fetchFactoryTokenAddresses(): Promise<string[]> {
-    const factoryAddr = OP20_DEPLOYER_ADDRESS[config.network];
-    if (!factoryAddr) return [];
-
-    const now = Date.now();
-    if (now - factoryCacheTs < FACTORY_CACHE_TTL_MS) return factoryCacheList;
-
-    try {
-        const provider = providerManager.getProvider();
-        const network = config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const factory = getContract<any>(factoryAddr, FACTORY_ABI as any, provider, network);
-
-        const countResult = (await factory.getDeploymentsCount()) as { properties: Record<string, unknown> };
-        const count = (countResult.properties['count'] as number | undefined) ?? 0;
-        if (count === 0) {
-            factoryCacheList = [];
-            factoryCacheTs = Date.now();
-            return factoryCacheList;
-        }
-
-        const results = await Promise.all(
-            Array.from({ length: count }, (_, i) =>
-                (factory.getDeploymentByIndex(i) as Promise<{ properties: Record<string, unknown> }>)
-                    .then((r) => {
-                        const token = r.properties['token'] as { toString(): string } | undefined;
-                        return token ? token.toString().toLowerCase() : null;
-                    })
-                    .catch(() => null),
-            ),
-        );
-
-        factoryCacheList = results.filter((t): t is string => t !== null);
-        factoryCacheTs = Date.now();
-        console.log(`[Balance] Factory: ${count} deployment(s), ${factoryCacheList.length} token address(es)`);
-    } catch (err) {
-        console.error('[Balance] Factory enumeration failed:', err instanceof Error ? err.message : String(err));
-    }
-
-    return factoryCacheList;
-}
-
-/**
- * Normalize any contract address to P2OP format so Set deduplication works
- * regardless of whether the address arrived as 0x hex or opr1/op1 bech32m.
- */
-import { EcKeyPair } from '@btc-vision/transaction';
-
-function toP2OP(address: string, network: Network): string {
-    if (!address.startsWith('0x')) return address;
-    try {
-        const bytes = Buffer.from(address.slice(2), 'hex');
-        return EcKeyPair.p2op(bytes, network);
-    } catch {
-        return address;
-    }
-}
+import { bitcoinNetwork } from '../../config.js';
+import { fetchBalances } from '../../api/IndexerClient.js';
 
 function escapeMarkdown(text: string): string {
     return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, (c) => `\\${c}`);
@@ -133,6 +30,13 @@ interface TokenBalance {
     contractAddress: string;
 }
 
+export interface NftBalance {
+    contractAddress: string;
+    name: string;
+    symbol: string;
+    count: bigint;
+}
+
 export interface AddressBalance {
     /** Address type label, e.g. 'P2TR', 'P2WPKH', 'P2PKH', 'CSV1' */
     type: string;
@@ -143,11 +47,6 @@ export interface AddressBalance {
 
 /**
  * Resolve the OPNet MLDSA owner for any address type.
- *
- * Falls back through three levels:
- *   1. getPublicKeyInfo(address) directly
- *   2. Stored MLDSA hash for tracked addresses → getPublicKeyInfo('0x' + hash)
- *   3. This address is a linked alias of another subscription → same fallback
  */
 async function resolveOwner(address: string) {
     const provider = providerManager.getProvider();
@@ -181,31 +80,25 @@ async function resolveOwner(address: string) {
 
 /**
  * Fetch BTC (per address type) + CSV1 + all discovered OP-20 token balances.
- *
- * Accepts Bitcoin addresses (bc1p, bc1q, bcrt1p, bcrt1q), MLDSA hex (0x…),
- * and P2OP (op1/opr1). Only address types with a balance > 0 are included
- * in addressBalances.
  */
 export async function fetchAllBalances(address: string): Promise<{
     addressBalances: AddressBalance[];
     tokens: TokenBalance[];
+    nfts: NftBalance[];
 }> {
     const provider = providerManager.getProvider();
-    const network: Network = config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
+    const network: Network = bitcoinNetwork;
 
     const ownerAddress = await resolveOwner(address);
 
     const addressBalances: AddressBalance[] = [];
 
     if (ownerAddress) {
-        // Collect all linked BTC address types from the resolved identity.
-        // Each type uses try/catch because p2wpkh/p2pkh require originalPublicKey.
         const candidates: Array<{ type: string; addr: string }> = [];
         try { candidates.push({ type: 'P2TR',   addr: ownerAddress.p2tr(network) }); }   catch { /* */ }
         try { candidates.push({ type: 'P2WPKH', addr: ownerAddress.p2wpkh(network) }); } catch { /* */ }
         try { candidates.push({ type: 'P2PKH',  addr: ownerAddress.p2pkh(network) }); }  catch { /* */ }
 
-        // Deduplicate by address string (p2tr and input address can be equal)
         const seen = new Set<string>();
         const unique = candidates.filter(({ addr }) => {
             if (seen.has(addr)) return false;
@@ -213,7 +106,6 @@ export async function fetchAllBalances(address: string): Promise<{
             return true;
         });
 
-        // Fetch BTC at each address type in parallel
         await Promise.all(unique.map(async ({ type, addr }) => {
             try {
                 const sats = await provider.getBalance(addr, true);
@@ -221,7 +113,7 @@ export async function fetchAllBalances(address: string): Promise<{
             } catch { /* */ }
         }));
 
-        // CSV1: requires originalPublicKey stored in the Address object
+        // CSV1
         try {
             const csvInfo = provider.getCSV1ForAddress(ownerAddress);
             const utxos = await provider.utxoManager.getUTXOs({
@@ -234,7 +126,6 @@ export async function fetchAllBalances(address: string): Promise<{
             if (csv1 > 0n) addressBalances.push({ type: 'CSV1', address: csvInfo.address, satoshis: csv1 });
         } catch { /* originalPublicKey not available — CSV1 skipped */ }
     } else {
-        // No OPNet identity found — show BTC at input address only
         try {
             const sats = await provider.getBalance(address, true);
             if (sats > 0n) {
@@ -251,54 +142,71 @@ export async function fetchAllBalances(address: string): Promise<{
     const typeOrder: Record<string, number> = { P2TR: 0, P2WPKH: 1, P2PKH: 2, CSV1: 3 };
     addressBalances.sort((a, b) => (typeOrder[a.type] ?? 9) - (typeOrder[b.type] ?? 9));
 
-    // ── OP-20 token balances ──────────────────────────────────────────────────
-
-    if (!ownerAddress) return { addressBalances, tokens: [] };
-
-    const [factoryTokens, discovered] = await Promise.all([
-        fetchFactoryTokenAddresses(),
-        Promise.resolve(walletRepo.getTokenContracts(address)),
-    ]);
-    const contractSet = new Set(
-        [...ALWAYS_CHECK[config.network], ...factoryTokens, ...discovered]
-            .map(addr => toP2OP(addr, network)),
-    );
-    console.log(`[Balance] Checking ${contractSet.size} contract(s) for ${address}`);
+    // ── OP-20 token balances (from indexer) ──────────────────────────────────
 
     const tokens: TokenBalance[] = [];
 
-    await Promise.all(
-        [...contractSet].map(async (contractAddress) => {
-            try {
-                const contract = getContract<IOP20Contract>(
-                    contractAddress,
-                    OP_20_ABI,
-                    provider,
-                    network,
-                );
-
-                const [balResult, symResult, decResult] = await Promise.all([
-                    contract.balanceOf(ownerAddress),
-                    contract.symbol(),
-                    contract.decimals(),
-                ]);
-
-                const balance = balResult.properties['balance'] as bigint | undefined;
-                if (balance === undefined || balance === 0n) return;
-
+    if (ownerAddress) {
+        try {
+            const indexerBalances = await fetchBalances(address);
+            for (const b of indexerBalances.balances) {
+                const bal = BigInt(b.balance);
+                if (bal === 0n) continue;
                 tokens.push({
-                    contractAddress,
-                    symbol: (symResult.properties['symbol'] as string | undefined) ?? contractAddress.slice(0, 8),
-                    amount: balance,
-                    decimals: (decResult.properties['decimals'] as number | undefined) ?? 8,
+                    contractAddress: b.contractAddress,
+                    symbol: b.symbol || b.contractAddress.slice(0, 8),
+                    amount: bal,
+                    decimals: b.decimals,
                 });
-            } catch { /* contract may not be OP-20 or call failed */ }
-        }),
-    );
+            }
+        } catch (err: unknown) {
+            console.warn('[Balance] Indexer balance fetch failed, falling back to empty:', err instanceof Error ? err.message : String(err));
+        }
+    }
 
     tokens.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
-    return { addressBalances, tokens };
+    // ── OP-721 NFT balances (still RPC-based — indexer doesn't track OP-721) ─
+
+    const nfts: NftBalance[] = [];
+
+    if (ownerAddress) {
+        const discoveredNfts = walletRepo.getNftContracts(address);
+        const nftContractSet = new Set(discoveredNfts);
+
+        await Promise.all(
+            [...nftContractSet].map(async (contractAddress) => {
+                try {
+                    const contract = getContract<IOP721Contract>(
+                        contractAddress,
+                        OP_721_ABI,
+                        provider,
+                        network,
+                    );
+
+                    const [balResult, nameResult, symResult] = await Promise.all([
+                        contract.balanceOf(ownerAddress),
+                        contract.name(),
+                        contract.symbol(),
+                    ]);
+
+                    const count = balResult.properties['balance'] as bigint | undefined;
+                    if (count === undefined || count === 0n) return;
+
+                    nfts.push({
+                        contractAddress,
+                        name:   (nameResult.properties['name']   as string | undefined) ?? contractAddress.slice(0, 8),
+                        symbol: (symResult.properties['symbol']  as string | undefined) ?? '???',
+                        count,
+                    });
+                } catch { /* contract call failed */ }
+            }),
+        );
+    }
+
+    nfts.sort((a, b) => a.name.localeCompare(b.name));
+
+    return { addressBalances, tokens, nfts };
 }
 
 function buildBalanceMessage(
@@ -306,6 +214,7 @@ function buildBalanceMessage(
     label: string | null,
     addressBalances: AddressBalance[],
     tokens: TokenBalance[],
+    nfts: NftBalance[] = [],
 ): string {
     const displayName = label ?? address;
 
@@ -343,6 +252,15 @@ function buildBalanceMessage(
         lines.push('', `_No OP\\-20 token balances found_`);
     }
 
+    if (nfts.length > 0) {
+        lines.push('', `🖼️ *NFTs*`);
+        for (const n of nfts) {
+            lines.push(
+                `*${escapeMarkdown(n.name)}* \\(${escapeMarkdown(n.symbol)}\\): \`${n.count.toString()}\``,
+            );
+        }
+    }
+
     return lines.join('\n');
 }
 
@@ -354,8 +272,8 @@ async function runBalanceCheck(
 ): Promise<void> {
     const thinking = await thinkingFn();
     try {
-        const { addressBalances, tokens } = await fetchAllBalances(address);
-        await editFn(thinking.message_id, buildBalanceMessage(address, label, addressBalances, tokens));
+        const { addressBalances, tokens, nfts } = await fetchAllBalances(address);
+        await editFn(thinking.message_id, buildBalanceMessage(address, label, addressBalances, tokens, nfts));
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[Balance] Error:', msg);
@@ -374,7 +292,7 @@ export async function balanceCommand(ctx: CommandContext<Context>): Promise<void
         return;
     }
 
-    const net = config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
+    const net = bitcoinNetwork;
     const valid =
         AddressVerificator.detectAddressType(address, net) !== null ||
         AddressVerificator.isValidP2OPAddress(address, net) ||

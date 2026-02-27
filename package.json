@@ -1,5 +1,5 @@
 {
-    "name": "opnet-wallet-tracker",
+    "name": "jeet-tracker",
     "version": "1.0.0",
     "description": "OPNet wallet tracker Telegram bot — like EtherDrops for Bitcoin L1",
     "type": "module",
@@ -8,23 +8,26 @@
         "build": "tsc",
         "start": "node dist/index.js",
         "dev": "tsx watch src/index.ts",
-        "lint": "eslint src --ext .ts",
+        "lint": "eslint src",
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {
-        "@btc-vision/bitcoin": "rc",
-        "@btc-vision/transaction": "rc",
-        "dotenv": "^16.4.7",
-        "grammy": "^1.35.0",
-        "opnet": "rc"
+        "@btc-vision/bip32": "^7.1.2",
+        "@btc-vision/bitcoin": "^7.0.0-rc.5",
+        "@btc-vision/ecpair": "^4.0.5",
+        "@btc-vision/transaction": "^1.8.0-rc.7",
+        "dotenv": "^17.3.1",
+        "grammy": "^1.40.0",
+        "mongodb": "^7.1.0",
+        "opnet": "^1.8.1-rc.9"
     },
     "devDependencies": {
-        "@eslint/js": "^9.39.2",
+        "@eslint/js": "^10.0.1",
         "@types/node": "latest",
         "eslint": "^10.0.1",
         "tsx": "latest",
         "typescript": "latest",
-        "typescript-eslint": "^8.36.0"
+        "typescript-eslint": "^8.56.0"
     },
     "overrides": {
         "@typescript-eslint/typescript-estree": {

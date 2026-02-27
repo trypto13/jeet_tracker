@@ -1,5 +1,7 @@
+import { config } from './config.js';
 import { database } from './db/Database.js';
 import { walletRepo } from './db/WalletRepository.js';
+import { subscriptionRepo } from './db/SubscriptionRepository.js';
 import { createBot } from './bot/Bot.js';
 import { Notifier } from './tracker/Notifier.js';
 import { BlockPoller } from './tracker/BlockPoller.js';
@@ -8,17 +10,17 @@ import { scanHistory } from './tracker/HistoricalScanner.js';
 async function main(): Promise<void> {
     console.log('[Main] Starting OPNet Wallet Tracker...');
 
-    // Load JSON file store
-    await database.load('./data/store.json');
+    // Connect to MongoDB and hydrate in-memory cache
+    await database.load(config.mongoUri);
     await walletRepo.ensureIndexes();
+    await subscriptionRepo.init(database.getDb());
 
     // Build Telegram bot
     const bot = createBot();
     const notifier = new Notifier(bot);
-    const poller = new BlockPoller(notifier);
+    const poller = new BlockPoller(notifier, bot);
 
     // Re-scan any tracked wallets that have no discovered token contracts yet.
-    // This handles wallets added before the scanner was working correctly.
     const allAddresses = await walletRepo.getAllTrackedAddresses();
     for (const addr of allAddresses) {
         if (!walletRepo.isFullyScanned(addr)) {
@@ -32,7 +34,7 @@ async function main(): Promise<void> {
         console.log('\n[Main] Shutting down...');
         poller.stop();
         await bot.stop();
-        void database; // file store needs no explicit close
+        await database.close();
         process.exit(0);
     };
 

@@ -4,8 +4,8 @@ export type { Subscription, LinkedAddresses, StoredUTXO };
 
 /**
  * Repository for tracked wallet subscriptions and tracker state.
- * Backed by the in-memory JSON store — all operations are synchronous
- * under the hood; async signatures are kept for drop-in compatibility.
+ * Backed by the in-memory cache with write-through to MongoDB.
+ * Read methods are synchronous; write methods fire MongoDB ops in the background.
  */
 class WalletRepository {
     private static instance: WalletRepository | undefined;
@@ -19,9 +19,8 @@ class WalletRepository {
         return WalletRepository.instance;
     }
 
-    /** No-op — indexes not needed for file store. */
     public async ensureIndexes(): Promise<void> {
-        return Promise.resolve();
+        await database.ensureIndexes();
     }
 
     // ── Authentication ──────────────────────────────────────────────────────────
@@ -34,7 +33,21 @@ class WalletRepository {
         const store = database.getStore();
         if (store.authorizedChats.includes(chatId)) return;
         store.authorizedChats.push(chatId);
-        database.scheduleSave();
+        void database.insertAuthorizedChat(chatId);
+    }
+
+    public revokeChat(chatId: number): void {
+        const store = database.getStore();
+        const hadAuth = store.authorizedChats.includes(chatId);
+        store.authorizedChats = store.authorizedChats.filter((id) => id !== chatId);
+        const before = store.subscriptions.length;
+        store.subscriptions = store.subscriptions.filter((s) => s.chatId !== chatId);
+        if (hadAuth) void database.deleteAuthorizedChat(chatId);
+        if (store.subscriptions.length < before) void database.deleteSubscriptionsByChatId(chatId);
+    }
+
+    public listAuthorizedChats(): number[] {
+        return database.getStore().authorizedChats;
     }
 
     public async addSubscription(
@@ -49,15 +62,16 @@ class WalletRepository {
         if (userSubs.length >= maxPerUser) return 'limit_exceeded';
         if (userSubs.some((s) => s.address === address)) return 'duplicate';
 
-        store.subscriptions.push({
+        const sub: Subscription = {
             id: crypto.randomUUID().slice(0, 8),
             chatId,
             address,
             label,
             createdAt: new Date().toISOString(),
-        });
+        };
 
-        database.scheduleSave();
+        store.subscriptions.push(sub);
+        void database.insertSubscription(sub);
         return 'added';
     }
 
@@ -71,7 +85,7 @@ class WalletRepository {
             (s) => !(s.chatId === chatId && s.address === address),
         );
         const removed = store.subscriptions.length < before;
-        if (removed) database.scheduleSave();
+        if (removed) void database.deleteSubscription(chatId, address);
         return removed;
     }
 
@@ -109,7 +123,7 @@ class WalletRepository {
         const existing = store.tokenContracts[walletAddress] ?? [];
         if (existing.includes(contractAddress)) return false;
         store.tokenContracts[walletAddress] = [...existing, contractAddress];
-        database.scheduleSave();
+        void database.upsertTokenContract(walletAddress, contractAddress);
         return true;
     }
 
@@ -120,6 +134,39 @@ class WalletRepository {
         return database.getStore().tokenContracts[walletAddress] ?? [];
     }
 
+    /**
+     * Register a known OP-721 NFT contract as having been seen for an address.
+     * Returns true if it was newly added.
+     */
+    public addNftContract(walletAddress: string, contractAddress: string): boolean {
+        const store = database.getStore();
+        const existing = store.nftContracts[walletAddress] ?? [];
+        if (existing.includes(contractAddress)) return false;
+        store.nftContracts[walletAddress] = [...existing, contractAddress];
+        void database.upsertNftContract(walletAddress, contractAddress);
+        return true;
+    }
+
+    /**
+     * Get all known OP-721 NFT contracts for an address.
+     */
+    public getNftContracts(walletAddress: string): string[] {
+        return database.getStore().nftContracts[walletAddress] ?? [];
+    }
+
+    /**
+     * Get a flat set of all NFT contract addresses across all tracked wallets.
+     * Used by the block parser to route Transferred events to nft_transfer vs token.
+     */
+    public getAllNftContractSet(): Set<string> {
+        const store = database.getStore();
+        const set = new Set<string>();
+        for (const contracts of Object.values(store.nftContracts)) {
+            for (const c of contracts) set.add(c);
+        }
+        return set;
+    }
+
     public isFullyScanned(walletAddress: string): boolean {
         return database.getStore().fullyScannedAddresses.includes(walletAddress);
     }
@@ -128,7 +175,7 @@ class WalletRepository {
         const store = database.getStore();
         if (!store.fullyScannedAddresses.includes(walletAddress)) {
             store.fullyScannedAddresses.push(walletAddress);
-            database.scheduleSave();
+            void database.setState('fullyScannedAddresses', store.fullyScannedAddresses);
         }
     }
 
@@ -138,7 +185,7 @@ class WalletRepository {
 
     public async setLastProcessedBlock(height: number): Promise<void> {
         database.getStore().lastProcessedBlock = height;
-        database.scheduleSave();
+        void database.setState('lastProcessedBlock', height);
     }
 
     // ── UTXO tracking ──────────────────────────────────────────────────────────
@@ -163,21 +210,24 @@ class WalletRepository {
         const store = database.getStore();
         const list = store.utxos[primaryAddress] ?? [];
         if (list.some((u) => u.txid === txid && u.vout === vout)) return;
-        store.utxos[primaryAddress] = [...list, { txid, vout, value: value.toString() }];
-        database.scheduleSave();
+        const storedValue = value.toString();
+        store.utxos[primaryAddress] = [...list, { txid, vout, value: storedValue }];
+        void database.insertUTXO(primaryAddress, txid, vout, storedValue);
     }
 
     /** Remove a spent UTXO by its txid:vout key. */
     public removeUTXO(txid: string, vout: number): void {
         const store = database.getStore();
+        let found = false;
         for (const addr of Object.keys(store.utxos)) {
-            const before = store.utxos[addr]!;
+            const before = store.utxos[addr] ?? [];
             const after = before.filter((u) => !(u.txid === txid && u.vout === vout));
             if (after.length !== before.length) {
                 store.utxos[addr] = after;
-                database.scheduleSave();
+                found = true;
             }
         }
+        if (found) void database.deleteUTXO(txid, vout);
     }
 
     /**
@@ -189,12 +239,13 @@ class WalletRepository {
         utxos: ReadonlyArray<{ txid: string; vout: number; value: bigint }>,
     ): void {
         const store = database.getStore();
-        store.utxos[primaryAddress] = utxos.map((u) => ({
+        const mapped = utxos.map((u) => ({
             txid: u.txid,
             vout: u.vout,
             value: u.value.toString(),
         }));
-        database.scheduleSave();
+        store.utxos[primaryAddress] = mapped;
+        void database.setUTXOs(primaryAddress, mapped);
     }
 
     /**
@@ -206,7 +257,7 @@ class WalletRepository {
         const sub = store.subscriptions.find((s) => s.address === primaryAddress);
         if (!sub) return;
         sub.linkedAddresses = linked;
-        database.scheduleSave();
+        void database.updateSubscriptionLinked(primaryAddress, linked);
     }
 
     /**
@@ -279,13 +330,21 @@ class WalletRepository {
                 mldsaMap.set(primary, linked.mldsaHash);
             }
 
-            // Add extra BTC addresses to trackedSet + canonicalMap (not to mldsaMap,
+            // Add extra BTC/OPNet addresses to trackedSet + canonicalMap (not to mldsaMap,
             // to avoid emitting duplicate events for the same MLDSA identity)
-            for (const extra of [linked.p2tr, linked.p2wpkh, linked.p2pkh, linked.csv1]) {
+            for (const extra of [linked.p2tr, linked.p2wpkh, linked.p2pkh, linked.csv1, linked.p2op]) {
                 if (extra && extra !== primary) {
                     trackedSet.add(extra);
                     canonicalMap.set(extra, primary);
                 }
+            }
+            // Also track hex identities so events using hex format match via trackedSet
+            for (const hex of [linked.mldsaHash, linked.tweakedPubkey]) {
+                if (!hex) continue;
+                trackedSet.add(hex);
+                trackedSet.add(`0x${hex}`);
+                canonicalMap.set(hex, primary);
+                canonicalMap.set(`0x${hex}`, primary);
             }
         }
 

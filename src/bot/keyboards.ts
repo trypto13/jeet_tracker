@@ -8,7 +8,9 @@ import type { Subscription } from '../db/WalletRepository.js';
 export const mainKeyboard = new Keyboard()
     .text('📋 My Wallets').text('💰 Check Balance')
     .row()
-    .text('➕ Track Wallet').text('❓ Help')
+    .text('➕ Track Wallet').text('🪙 Track Token')
+    .row()
+    .text('📋 My Tokens').text('❓ Help')
     .resized()
     .persistent();
 
