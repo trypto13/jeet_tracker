@@ -4,6 +4,13 @@
     "description": "OPNet wallet tracker Telegram bot — like EtherDrops for Bitcoin L1",
     "type": "module",
     "main": "dist/index.js",
+    "author": "trypto13",
+    "contributors": [
+        {
+            "name": "OPNet-BOB",
+            "url": "https://github.com/OPNet-BOB"
+        }
+    ],
     "scripts": {
         "build": "tsc",
         "start": "node dist/index.js",

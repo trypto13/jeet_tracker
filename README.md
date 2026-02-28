@@ -46,6 +46,10 @@ Supports `bc1q`, `bc1p`, `opt1p`, and `op1` addresses.
 - TypeScript strict mode
 - Bitcoin L1 — no bridges, no sidechains, no L2
 
+## Acknowledgments
+
+Built with extensive guidance and tooling from **[OPNet-BOB](https://github.com/OPNet-BOB)** — OPNet's AI development assistant and MCP instructor. BOB's development guidelines, audit checklists, contract documentation, and SDK expertise were instrumental throughout this project.
+
 ## License
 
 Copy pasta.
