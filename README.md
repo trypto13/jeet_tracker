@@ -14,8 +14,9 @@ Track any wallet on OPNet and get slow-fi Telegram alerts for:
 
 - **BTC sends & receives** — see the sats flow in and out
 - **OP-20 token transfers** — catch every token move before CT does
+- **OP-721 NFT transfers** — collection name, symbol, and bulk transfer counts (e.g. `3× CoolNFT`)
 - **NativeSwap activity** — liquidity addition and removal, swaps executed
-- **Token price alerts** — set thresholds on any token pair and get pinged when it hits
+- **Token price alerts** — set thresholds on any OP-20 token pair and get pinged when it hits
 - **Portfolio view** — aggregate BTC + token + NFT balances across all your tracked wallets
 - **Liquidity removal and addition** — Who's nice farmooooor?
 
@@ -30,7 +31,7 @@ Track any wallet on OPNet and get slow-fi Telegram alerts for:
 | `/portfolio` | Aggregate balances across all wallets |
 | `/listings <contract>` | NativeSwap liquidity providers |
 | `/reservations <contract>` | NativeSwap reservation state |
-| `/tracktoken <contract> <threshold>` | Set a token price alert |
+| `/tracktoken <contract> <threshold>` | Track a token — auto-detects OP-20 vs OP-721. Price alerts for OP-20 only. |
 | `/untracktokens` | Clear token alerts |
 | `/tokenalerts` | View active token alerts |
 | `/redeem <code>` | Activate your subscription |
