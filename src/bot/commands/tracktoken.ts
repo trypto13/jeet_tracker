@@ -11,7 +11,14 @@ function escapeMarkdown(text: string): string {
     return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, (c) => `\\${c}`);
 }
 
-/** Try to identify and fetch basic info for a token contract. Returns null if not a valid token. */
+/**
+ * Try to identify and fetch basic info for a token contract. Returns null if not a valid token.
+ *
+ * Detection: try OP-721 metadata() first. Both OP20 and OP721 share the
+ * `metadata` selector, but their output schemas differ (OP20 returns 4 fields,
+ * OP721 returns 8). Decoding OP20 bytes with the OP721 ABI fails because the
+ * field count and types mismatch. If the OP721 decode succeeds, it's an NFT.
+ */
 async function detectToken(contractAddress: string): Promise<{
     tokenType: 'op20' | 'op721';
     name: string;
@@ -22,7 +29,18 @@ async function detectToken(contractAddress: string): Promise<{
     const provider = providerManager.getProvider();
     const network = bitcoinNetwork;
 
-    // Try OP-20 first
+    // Try OP-721 first via metadata() — OP721 metadata has 8 output fields,
+    // OP20 only has 4. The decode will fail on OP20 contracts.
+    try {
+        const contract = getContract<IOP721Contract>(contractAddress, OP_721_ABI, provider, network);
+        const metaRes = await contract.metadata();
+        const props = metaRes.properties as Record<string, unknown>;
+        const name   = (props['name']   as string | undefined) ?? '';
+        const symbol = (props['symbol'] as string | undefined) ?? '';
+        if (symbol) return { tokenType: 'op721', name, symbol };
+    } catch { /* not OP-721 */ }
+
+    // Try OP-20
     try {
         const contract = getContract<IOP20Contract>(contractAddress, OP_20_ABI, provider, network);
         const [nameRes, symRes, decRes, supplyRes] = await Promise.all([
@@ -43,15 +61,6 @@ async function detectToken(contractAddress: string): Promise<{
             ...(totalSupply !== undefined && { totalSupply }),
         };
     } catch { /* not OP-20 */ }
-
-    // Try OP-721
-    try {
-        const contract = getContract<IOP721Contract>(contractAddress, OP_721_ABI, provider, network);
-        const [nameRes, symRes] = await Promise.all([contract.name(), contract.symbol()]);
-        const name   = (nameRes.properties['name']   as string | undefined) ?? '';
-        const symbol = (symRes.properties['symbol']  as string | undefined) ?? '';
-        if (symbol) return { tokenType: 'op721', name, symbol };
-    } catch { /* not OP-721 */ }
 
     return null;
 }
